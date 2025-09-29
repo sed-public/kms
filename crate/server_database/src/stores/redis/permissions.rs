@@ -5,7 +5,7 @@ use std::{
 
 use cosmian_findex::IndexADT;
 use cosmian_kmip::kmip_2_1::KmipOperation;
-use serde::{Deserialize, Serialize};
+use cosmian_kms_crypto::reexport::cosmian_crypto_core::bytes_ser_de::Serializable;
 
 use crate::{
     DbError,
@@ -16,14 +16,13 @@ use crate::{
     },
 };
 
-#[derive(Clone, Eq, PartialEq, Debug, Hash, Serialize, Deserialize)]
-pub(crate) struct ObjectUid(pub(crate) String);
+#[derive(Clone, Eq, PartialEq, Debug, Hash)]
+pub(crate) struct ObjectUid(pub(crate) String); // Using String for simplicity - TB optimized in case of perf issue (unlikely)
 
 impl From<&ObjectUid> for Keyword {
     fn from(uid: &ObjectUid) -> Self {
-        // Prefix with "p:o:" to avoid collisions with users ids
-        // p: permission, o: object
-        Keyword::from(format!("p:o:{}", uid.0).as_bytes())
+        // Prefix with "o:" to avoid collisions with users ids
+        Keyword::from(format!("o:{}", uid.0).as_bytes())
     }
 }
 
@@ -45,14 +44,13 @@ impl From<ObjectUid> for String {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Debug, Hash, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Debug, Hash)]
 pub(crate) struct UserId(pub(crate) String);
 
 impl From<&UserId> for Keyword {
     fn from(uid: &UserId) -> Self {
-        // Prefix with "p:u:" to avoid collisions with objects ids
-        // p: permission, u: users
-        Keyword::from(format!("p:u:{}", uid.0).as_bytes())
+        // Prefix with "u:" to avoid collisions with objects ids
+        Keyword::from(format!("u:{}", uid.0).as_bytes())
     }
 }
 
@@ -68,14 +66,14 @@ impl From<UserId> for String {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Debug, Hash, Serialize, Deserialize)]
-pub(crate) struct PermissionTriplet {
+#[derive(Clone, Eq, PartialEq, Debug, Hash)]
+pub(crate) struct PermTriple {
     obj_uid: ObjectUid,
     user_id: UserId,
     permission: KmipOperation,
 }
 
-impl PermissionTriplet {
+impl PermTriple {
     pub(crate) fn new(obj_uid: ObjectUid, user_id: UserId, permission: KmipOperation) -> Self {
         Self {
             obj_uid,
@@ -107,19 +105,61 @@ impl PermissionTriplet {
     }
 }
 
-impl TryFrom<&IndexedValue> for PermissionTriplet {
+impl Serializable for PermTriple {
     type Error = DbError;
 
-    fn try_from(value: &IndexedValue) -> Result<Self, Self::Error> {
-        serde_json::from_slice(value.as_ref()).map_err(|e| DbError::ConversionError(e.to_string()))
+    fn length(&self) -> usize {
+        // obj_uid + user_id + permission
+        self.obj_uid.0.length() + self.user_id.0.length() + 1 // 1 byte is KmipOperation's enum size
+    }
+
+    fn write(
+        &self,
+        ser: &mut cosmian_kms_crypto::reexport::cosmian_crypto_core::bytes_ser_de::Serializer, // full dependency path spec if needed to avoid collisions
+    ) -> Result<usize, Self::Error> {
+        let mut written = 0;
+        written += ser.write(&self.obj_uid.0)?;
+        written += ser.write(&self.user_id.0)?;
+        written += ser.write_vec(&[self.permission as u8])?;
+        Ok(written)
+    }
+
+    fn read(
+        de: &mut cosmian_kms_crypto::reexport::cosmian_crypto_core::bytes_ser_de::Deserializer,
+    ) -> Result<Self, Self::Error> {
+        let obj_uid = ObjectUid(String::from_utf8(de.read_vec()?)?);
+        let user_id = UserId(String::from_utf8(de.read_vec()?)?);
+        let perm_vec = de.read_vec()?;
+        let permission = KmipOperation::from_repr(perm_vec[0]).ok_or_else(|| {
+            DbError::ConversionError(format!("Invalid KmipOperation value: {}", perm_vec[0]))
+        })?;
+        Ok(PermTriple {
+            obj_uid,
+            user_id,
+            permission,
+        })
     }
 }
 
-impl TryFrom<&PermissionTriplet> for IndexedValue {
+impl TryFrom<&IndexedValue> for PermTriple {
     type Error = DbError;
 
-    fn try_from(value: &PermissionTriplet) -> Result<Self, Self::Error> {
-        Ok(Self::from(serde_json::to_vec(value)?))
+    fn try_from(value: &IndexedValue) -> Result<Self, Self::Error> {
+        cosmian_kms_crypto::reexport::cosmian_crypto_core::bytes_ser_de::Serializable::deserialize(
+            value,
+        )
+    }
+}
+
+impl TryFrom<&PermTriple> for IndexedValue {
+    type Error = DbError;
+
+    fn try_from(value: &PermTriple) -> Result<Self, Self::Error> {
+        Ok(IndexedValue::from(
+          cosmian_kms_crypto::reexport::cosmian_crypto_core::bytes_ser_de::Serializable::serialize(
+               value,
+           )?.to_vec()
+        ))
     }
 }
 
@@ -127,11 +167,11 @@ impl TryFrom<&PermissionTriplet> for IndexedValue {
 /// using a dual index pattern for efficient lookups as there is no wildcard support.
 ///
 /// For each permission triple (user_id, obj_uid, permission), we store it twice under:
-/// - The user id: `u::{user_id}` → (user_id, obj_uid, permission)
-/// - The object uid: `o::{obj_uid}` → (user_id, obj_uid, permission)
+/// - The user id: `u:{user_id}` → (user_id, obj_uid, permission)
+/// - The object uid: `o:{obj_uid}` → (user_id, obj_uid, permission)
 ///
 /// A triple size (before serialization) is 56 bytes. Duplicating the index induces doubling the storage,
-/// which makes it 112 bytes (+ serialization metadata) per permission triple to store.
+/// which makes it take at worst 112 bytes per permission triple to store.
 ///
 /// By explicitly maintaining both indexes, we avoid the need for wildcard searches
 /// which are not supported by Findex yet needed if we want to list all permissions
@@ -147,25 +187,23 @@ impl PermissionsDB {
     }
 
     /// Search for a keyword
-    async fn search_one_keyword(&self, keyword: Keyword) -> DbResult<HashSet<PermissionTriplet>> {
+    async fn search_one_keyword(&self, keyword: Keyword) -> DbResult<HashSet<PermTriple>> {
         self.findex
             .search(&keyword)
             .await?
             .iter()
-            .map(PermissionTriplet::try_from)
-            .collect::<DbResult<HashSet<PermissionTriplet>>>()
+            .map(PermTriple::try_from)
+            .collect()
     }
 
-    /// List all the permissions granted to an user
+    /// List all the permissions granted to a user
     /// per object uid
     pub(crate) async fn list_user_permissions(
         &self,
         user_id: &UserId,
     ) -> DbResult<HashMap<ObjectUid, HashSet<KmipOperation>>> {
         let all_user_permissions = self.search_one_keyword(Keyword::from(user_id)).await?;
-        Ok(PermissionTriplet::permissions_per_object(
-            all_user_permissions,
-        ))
+        Ok(PermTriple::permissions_per_object(all_user_permissions))
     }
 
     /// List all the permissions granted on an object
@@ -175,9 +213,7 @@ impl PermissionsDB {
         obj_uid: &ObjectUid,
     ) -> DbResult<HashMap<UserId, HashSet<KmipOperation>>> {
         let all_object_permissions = self.search_one_keyword(Keyword::from(obj_uid)).await?;
-        Ok(PermissionTriplet::permissions_per_user(
-            all_object_permissions,
-        ))
+        Ok(PermTriple::permissions_per_user(all_object_permissions))
     }
 
     /// List all the permissions granted to the user on an object
@@ -192,8 +228,7 @@ impl PermissionsDB {
             .await?
             .into_iter()
             .filter(|triple| {
-                // Include permissions for the specific user and optionally include
-                // wildcard permissions (user="*") if inherited access is allowed
+                // Optionally include wildcard permissions (user="*") if inherited access is allowed
                 &triple.user_id == user_id
                     || (!no_inherited_access && triple.user_id == UserId("*".to_string()))
             })
@@ -209,9 +244,8 @@ impl PermissionsDB {
         user_id: &UserId,
         permission: KmipOperation,
     ) -> DbResult<()> {
-        let triple = PermissionTriplet::new(obj_uid.clone(), user_id.clone(), permission);
+        let triple = PermTriple::new(obj_uid.clone(), user_id.clone(), permission);
         let indexed_triple = IndexedValue::try_from(&triple)?;
-
         // Create both keywords for dual indexing:
         let user_keyword = Keyword::from(user_id);
         let obj_keyword = Keyword::from(obj_uid);
@@ -232,7 +266,7 @@ impl PermissionsDB {
         user_id: &UserId,
         permission: KmipOperation,
     ) -> DbResult<()> {
-        let triple = PermissionTriplet::new(obj_uid.clone(), user_id.clone(), permission);
+        let triple = PermTriple::new(obj_uid.clone(), user_id.clone(), permission);
         let indexed_triple = IndexedValue::try_from(&triple)?;
 
         // Create both keywords for dual indexing:

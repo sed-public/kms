@@ -7,9 +7,9 @@ use cosmian_kmip::{
 };
 use cosmian_kms_crypto::{CryptoError, reexport::cosmian_crypto_core::CryptoCoreError};
 use cosmian_kms_interfaces::InterfaceError;
+use cosmian_logger::reexport::tracing;
 #[cfg(feature = "non-fips")]
 use cosmian_sse_memories::{ADDRESS_LENGTH, Address, RedisMemoryError};
-use cosmian_logger::reexport::tracing;
 use thiserror::Error;
 
 use crate::DbError::CryptographicError;
@@ -114,6 +114,9 @@ pub enum DbError {
     #[cfg(feature = "non-fips")]
     #[error("Redis-Memory error: {0}")]
     RedisMemory(#[from] RedisMemoryError),
+
+    #[error("Crypto-core error: {0}")]
+    CryptoCoreError(#[from] CryptoCoreError),
 }
 
 impl From<std::string::FromUtf8Error> for DbError {
@@ -158,12 +161,6 @@ impl From<InterfaceError> for DbError {
             InterfaceError::Db(s) => Self::Store(s),
             x => Self::Store(x.to_string()),
         }
-    }
-}
-
-impl From<CryptoCoreError> for DbError {
-    fn from(e: CryptoCoreError) -> Self {
-        CryptographicError(e.to_string())
     }
 }
 

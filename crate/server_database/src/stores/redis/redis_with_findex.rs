@@ -18,8 +18,8 @@ use cosmian_kms_interfaces::{
     AtomicOperation, InterfaceResult, ObjectWithMetadata, ObjectsStore, PermissionsStore,
     SessionParams,
 };
-use cosmian_sse_memories::{ADDRESS_LENGTH, Address, RedisMemory};
 use cosmian_logger::trace;
+use cosmian_sse_memories::{ADDRESS_LENGTH, Address, RedisMemory};
 use redis::aio::ConnectionManager;
 use uuid::Uuid;
 
@@ -57,14 +57,26 @@ pub fn redis_master_key_from_password(
     Ok(master_secret_key)
 }
 
-/// Find the intersection of all the sets
-fn intersect_all<I: IntoIterator<Item = HashSet<IndexedValue>>>(sets: I) -> HashSet<IndexedValue> {
-    let mut iter = sets.into_iter();
-    let first = iter.next().unwrap_or_default();
-    iter.fold(first, |acc, set| acc.intersection(&set).cloned().collect())
+// /// Find the intersection of all the sets
+// fn intersect_all<I: IntoIterator<Item = HashSet<IndexedValue>>>(sets: I) -> HashSet<IndexedValue> {
+//     let mut iter = sets.into_iter();
+//     let first = iter.next().unwrap_or_default();
+//     iter.fold(first, |acc, set| acc.intersection(&set).cloned().collect())
+// }
+
+fn intersect_all_refs<'a>(sets: &'a Vec<HashSet<&'a IndexedValue>>) -> HashSet<&'a IndexedValue> {
+    if sets.is_empty() {
+        // necessary to avoid panic on sets[0]
+        return HashSet::new();
+    }
+
+    let first = sets[0].clone();
+    sets.iter()
+        .skip(1)
+        .fold(first, |acc, set| acc.intersection(set).copied().collect())
 }
 
-/// Findex implementation using Redis as the backing memory storage.
+/// Findex implementation using Redis in the memory layer.
 pub(crate) type FindexRedis = Findex<
     CUSTOM_WORD_LENGTH,
     IndexedValue,
@@ -81,7 +93,7 @@ pub(crate) async fn init_findex_redis(
 ) -> Result<FindexRedis, DbError> {
     let redis_memory =
         RedisMemory::<Address<ADDRESS_LENGTH>, [u8; CUSTOM_WORD_LENGTH]>::new_with_url(redis_url)
-            .await?; // up to this point the memory is on cleartext
+            .await?;
 
     let encrypted_redis_memory = MemoryEncryptionLayer::new(findex_master_key, redis_memory);
 
@@ -98,7 +110,6 @@ pub(crate) struct RedisWithFindex {
     objects_db: Arc<ObjectsDB>,
     permissions_db: PermissionsDB,
     findex: Arc<FindexRedis>,
-    // findex_master_key: Secret<FINDEX_KEY_LENGTH>,
 }
 
 impl RedisWithFindex {
@@ -252,7 +263,6 @@ impl RedisWithFindex {
         Ok(db_object)
     }
 
-    // For each keyword, insert the uid as a value associated with that keyword
     async fn prepare_object_for_state_update(
         &self,
         uid: &str,
@@ -457,7 +467,7 @@ impl ObjectsStore for RedisWithFindex {
             .collect::<HashSet<Keyword>>();
         // find the indexed values that match at least one of the tags
         // TODO: upon release of `batch_findex`, use `batch_search` instead of `search`
-        let mut uids_per_keyword = HashMap::new();
+        let mut uids_per_keyword = HashMap::with_capacity(tag_keywords.len());
         for keyword in tag_keywords {
             let search_result = self
                 .findex
@@ -466,12 +476,19 @@ impl ObjectsStore for RedisWithFindex {
                 .map_err(|e| db_error!(format!("Error while searching for tags: {e:?}")))?;
             uids_per_keyword.insert(keyword, search_result);
         }
+        // convert to a vector of references to avoid cloning later on
+        let indexed_values_set: Vec<HashSet<&IndexedValue>> = uids_per_keyword
+            .values()
+            .map(|set| set.iter().collect::<HashSet<_>>())
+            .collect();
         // we want the intersection of all the results
-        let uids = intersect_all(uids_per_keyword.values().cloned());
+        let uids = intersect_all_refs(&indexed_values_set)
+            .into_iter()
+            .collect::<HashSet<&IndexedValue>>();
         Ok(uids
             .into_iter()
-            .map(|i| {
-                String::from_utf8(i.into())
+            .map(|uid| {
+                String::from_utf8(uid.to_vec())
                     .map_err(|e| db_error!(format!("Invalid uid. Error: {e:?}")))
             })
             .collect::<DbResult<HashSet<String>>>()?)
@@ -509,7 +526,7 @@ impl ObjectsStore for RedisWithFindex {
             return Ok(vec![])
         }
         // search the keywords in the index
-        let mut uids_per_keyword = HashMap::new();
+        let mut uids_per_keyword = HashMap::with_capacity(keywords.len());
         for keyword in keywords {
             let search_result = self
                 .findex
@@ -518,12 +535,20 @@ impl ObjectsStore for RedisWithFindex {
                 .map_err(|e| db_error!(format!("Error while searching for tags: {e:?}")))?;
             uids_per_keyword.insert(keyword, search_result);
         }
-        let uids = intersect_all(uids_per_keyword.values().cloned());
+
+        let indexed_values_set: Vec<HashSet<&IndexedValue>> = uids_per_keyword
+            .values()
+            .map(|set| set.iter().collect::<HashSet<_>>())
+            .collect();
+        // we want the intersection of all the results
+        let uids = intersect_all_refs(&indexed_values_set)
+            .into_iter()
+            .collect::<HashSet<&IndexedValue>>();
 
         let uids = uids
             .into_iter()
-            .map(|i| {
-                String::from_utf8(i.into())
+            .map(|uid| {
+                String::from_utf8(uid.to_vec())
                     .map_err(|e| db_error!(format!("Invalid uid. Error: {e:?}")))
             })
             .collect::<DbResult<HashSet<String>>>()?;
@@ -706,8 +731,15 @@ mod tests {
         .into_iter()
         .collect();
 
-        let sets = vec![set1, set2, set3];
-        let res = super::intersect_all(sets);
+        // Create references to the IndexedValues
+        let ref_set1: HashSet<&IndexedValue> = set1.iter().collect();
+        let ref_set2: HashSet<&IndexedValue> = set2.iter().collect();
+        let ref_set3: HashSet<&IndexedValue> = set3.iter().collect();
+
+        // Create a Vec of HashSets with references
+        let sets = vec![ref_set1, ref_set2, ref_set3];
+
+        let res = super::intersect_all_refs(&sets);
         assert_eq!(res.len(), 2);
         assert!(res.contains(&IndexedValue::from(b"3".as_slice())));
         assert!(res.contains(&IndexedValue::from(b"4".as_slice())));
