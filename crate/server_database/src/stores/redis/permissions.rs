@@ -6,6 +6,7 @@ use std::{
 use cosmian_findex::IndexADT;
 use cosmian_kmip::kmip_2_1::KmipOperation;
 use cosmian_kms_crypto::reexport::cosmian_crypto_core::bytes_ser_de::Serializable;
+use uuid::Uuid;
 
 use crate::{
     DbError,
@@ -113,8 +114,16 @@ impl Serializable for PermTriple {
     fn read(
         de: &mut cosmian_kms_crypto::reexport::cosmian_crypto_core::bytes_ser_de::Deserializer,
     ) -> Result<Self, Self::Error> {
-        let obj_uid = ObjectUid(String::from_utf8(de.read_vec()?)?);
-        let user_id = UserId(String::from_utf8(de.read_vec()?)?);
+        let obj_uid = ObjectUid(
+            Uuid::from_slice(de.read_vec()?.as_slice())
+                .map_err(|e| DbError::ConversionError(format!("Failed to convert to UUID: {e}")))?
+                .to_string(),
+        );
+        let user_id = UserId(
+            Uuid::from_slice(de.read_vec()?.as_slice())
+                .map_err(|e| DbError::ConversionError(format!("Failed to convert to UUID: {e}")))?
+                .to_string(),
+        );
         let perm_byte = de.read_array::<1>()?;
         let permission = KmipOperation::from_repr(perm_byte[0]).ok_or_else(|| {
             DbError::ConversionError(format!("Invalid KmipOperation value: {}", perm_byte[0]))

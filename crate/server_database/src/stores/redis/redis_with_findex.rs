@@ -59,15 +59,10 @@ pub fn redis_master_key_from_password(
 }
 
 fn intersect_all_refs<'a>(sets: &'a Vec<HashSet<&'a IndexedValue>>) -> HashSet<&'a IndexedValue> {
-    if sets.is_empty() {
-        // necessary to avoid panic on sets[0]
-        return HashSet::new();
-    }
-
-    let first = sets[0].clone();
     sets.iter()
-        .skip(1)
-        .fold(first, |acc, set| acc.intersection(set).copied().collect())
+        .cloned()
+        .reduce(|acc, set| acc.intersection(&set).copied().collect())
+        .unwrap_or_else(HashSet::new)
 }
 
 /// Findex implementation using Redis in the memory layer.
@@ -478,8 +473,9 @@ impl ObjectsStore for RedisWithFindex {
         Ok(uids
             .into_iter()
             .map(|uid| {
-                String::from_utf8(uid.to_vec())
-                    .map_err(|e| db_error!(format!("Invalid uid. Error: {e:?}")))
+                Ok(Uuid::from_slice(uid.as_ref())
+                    .map_err(|_| DbError::DatabaseError("Invalid UID in index".to_string()))?
+                    .to_string())
             })
             .collect::<DbResult<HashSet<String>>>()?)
     }
@@ -538,8 +534,9 @@ impl ObjectsStore for RedisWithFindex {
         let uids = uids
             .into_iter()
             .map(|uid| {
-                String::from_utf8(uid.to_vec())
-                    .map_err(|e| db_error!(format!("Invalid uid. Error: {e:?}")))
+                Ok(Uuid::from_slice(uid.as_ref())
+                    .map_err(|_| DbError::DatabaseError("Invalid UID in index".to_string()))?
+                    .to_string())
             })
             .collect::<DbResult<HashSet<String>>>()?;
         trace!("find: uids before permissions: {:?}", uids);
