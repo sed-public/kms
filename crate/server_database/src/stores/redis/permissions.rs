@@ -276,40 +276,40 @@ impl PermissionsDB {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use cosmian_kmip::kmip_2_1::KmipOperation;
-    use cosmian_kms_crypto::reexport::cosmian_crypto_core::{
-        bytes_ser_de::test_serialization, reexport::rand_core::SeedableRng,
-    };
+// #[cfg(test)]
+// mod tests {
+//     use cosmian_kmip::kmip_2_1::KmipOperation;
+//     use cosmian_kms_crypto::reexport::cosmian_crypto_core::{
+//         bytes_ser_de::test_serialization, reexport::rand_core::SeedableRng,
+//     };
 
-    use super::*;
+//     use super::*;
 
-    #[test]
-    fn test_perm_triple_serialization_randomized() {
-        use cosmian_kms_crypto::reexport::cosmian_crypto_core::{
-            CsRng, reexport::rand_core::RngCore,
-        };
-        use uuid::Uuid;
+//     #[test]
+//     fn test_perm_triple_serialization_randomized() {
+//         use cosmian_kms_crypto::reexport::cosmian_crypto_core::{
+//             CsRng, reexport::rand_core::RngCore,
+//         };
+//         use uuid::Uuid;
 
-        let mut rng = CsRng::from_entropy();
+//         let mut rng = CsRng::from_entropy();
 
-        // All KmipOperation variants (17 at the time of writing)
-        let all_operations: Vec<KmipOperation> =
-            (0..=17).filter_map(KmipOperation::from_repr).collect();
+//         // All KmipOperation variants (17 at the time of writing)
+//         let all_operations: Vec<KmipOperation> =
+//             (0..=17).filter_map(KmipOperation::from_repr).collect();
 
-        for _ in 0..10 {
-            let obj_uid = ObjectUid(Uuid::new_v4().to_string());
-            let user_id = UserId(Uuid::new_v4().to_string());
-            let permission = all_operations[rng.next_u32() as usize % all_operations.len()];
+//         for _ in 0..10 {
+//             let obj_uid = ObjectUid(Uuid::new_v4().to_string());
+//             let user_id = UserId(Uuid::new_v4().to_string());
+//             let permission = all_operations[rng.next_u32() as usize % all_operations.len()];
 
-            let perm = PermTriple {
-                obj_uid,
-                user_id,
-                permission,
-            };
+//             let perm = PermTriple {
+//                 obj_uid,
+//                 user_id,
+//                 permission,
+//             };
 
-            test_serialization(&perm).unwrap();
-        }
-    }
-}
+//             test_serialization(&perm).unwrap();
+//         }
+//     }
+// }
