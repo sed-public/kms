@@ -72,9 +72,8 @@ fn my_sql_row_to_owm(row: &MySqlRow) -> Result<ObjectWithMetadata, DbError> {
     let attributes: Attributes = serde_json::from_value(row.get::<Value, _>(2))
         .context("failed deserializing the Attributes")?;
     let owner = row.get::<String, _>(3);
-    let state = State::try_from(row.get::<String, _>(4).as_str()).map_err(|e| {
-        DbError::ConversionError(format!("failed converting the state: {e}").into())
-    })?;
+    let state = State::try_from(row.get::<String, _>(4).as_str())
+        .map_err(|e| DbError::ConversionError(format!("failed converting the state: {e}")))?;
     Ok(ObjectWithMetadata::new(
         id, object, owner, state, attributes,
     ))
