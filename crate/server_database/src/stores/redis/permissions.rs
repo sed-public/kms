@@ -105,9 +105,8 @@ impl Serializable for PermTriple {
         ser: &mut cosmian_kms_crypto::reexport::cosmian_crypto_core::bytes_ser_de::Serializer, // full dependency path spec if needed to avoid collisions
     ) -> Result<usize, Self::Error> {
         let mut written = 0;
-        // Writing the UUIDs as their raw 16 bytes representation to save space
-        written += ser.write_array(Uuid::parse_str(&self.obj_uid.0)?.as_bytes())?;
-        written += ser.write_array(Uuid::parse_str(&self.user_id.0)?.as_bytes())?;
+        written += ser.write(&self.obj_uid.0)?;
+        written += ser.write(&self.user_id.0)?;
         written += ser.write_array(&[self.permission as u8])?;
         Ok(written)
     }
@@ -115,8 +114,8 @@ impl Serializable for PermTriple {
     fn read(
         de: &mut cosmian_kms_crypto::reexport::cosmian_crypto_core::bytes_ser_de::Deserializer,
     ) -> Result<Self, Self::Error> {
-        let obj_uid = ObjectUid(Uuid::from_bytes(de.read_array()?).into());
-        let user_id = UserId(Uuid::from_bytes(de.read_array()?).into());
+        let obj_uid = ObjectUid(String::from_utf8(de.read_vec()?)?);
+        let user_id = UserId(String::from_utf8(de.read_vec()?)?);
         let perm_byte = de.read_array::<1>()?;
         let permission = KmipOperation::from_repr(perm_byte[0]).ok_or_else(|| {
             DbError::ConversionError(
