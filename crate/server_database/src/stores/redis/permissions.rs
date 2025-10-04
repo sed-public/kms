@@ -42,7 +42,7 @@ pub(crate) struct UserId(pub(crate) String);
 impl From<&UserId> for Keyword {
     fn from(uid: &UserId) -> Self {
         // Prefix with "u:" to avoid collisions with objects ids
-        Self::from(format!("u:{}", uid.0).as_bytes())
+        Self::from([b"u".as_slice(), uid.0.as_bytes()].concat())
     }
 }
 
